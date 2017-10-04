@@ -32,10 +32,10 @@ class Object a where
 
 
 collision :: (Object a, Object b) => a -> b -> Bool
-collision a b = (lt ay ah < rb by bh)
-            &&  (rb ax aw > lt bx bw)
-            &&  (lt ax aw < rb bx bw)
-        --    &&  (rb ay ah > lt by bh) somehow this line breaks the program
+collision a b = (lt ay ah <= rb by bh)
+            &&  (rb ax aw >= lt bx bw)
+            &&  (lt ax aw <= rb bx bw)
+            &&  (rb ay ah >= lt by bh)
   where V2 ax ay = position a
         V2 aw ah = dimensions a
         V2 bx by = position b
@@ -89,7 +89,7 @@ bulletDims :: V2 Double
 bulletDims = V2 5 5
 
 bulletVel :: V2 Double
-bulletVel = V2 0 (-20)
+bulletVel = V2 0 (-9)
 
 -- | Represents the game state.
 data Model = Model
