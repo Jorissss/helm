@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 
+import Data.List((\\))
 import Linear.V2 (V2(V2))
 
 import Helm
@@ -25,15 +26,70 @@ data Action
   | Shoot                       -- ^ Shoot.
 
 
+class Object a where
+  position :: a -> V2 Double
+  dimensions :: a -> V2 Double
+
+
+collision :: (Object a, Object b) => a -> b -> Bool
+collision a b = (lt ay ah < rb by bh)
+            &&  (rb ax aw > lt bx bw)
+            &&  (lt ax aw < rb bx bw)
+        --    &&  (rb ay ah > lt by bh) somehow this line breaks the program
+  where V2 ax ay = position a
+        V2 aw ah = dimensions a
+        V2 bx by = position b
+        V2 bw bh = dimensions b
+        lt xy wh = xy - (wh / 2) -- calculate left/top given x/y and width/height
+        rb xy wh = xy + (wh / 2) -- calculate right/bottom given x/y and with/height
+
+-- returns Nothing if nothing is filtered
+flagFilter :: (a -> Bool) -> [a] -> Maybe [a]
+flagFilter pred xs = ff False pred xs where
+  ff flag pred (x:xs) = if pred x
+    then fmap (x :) (ff flag pred xs)
+    else ff True pred xs
+  ff flag _ [] = if flag then Just [] else Nothing
+
+
+-- relates can be collide
+doubleFilter :: (a -> b -> Bool) -> [a] -> [b] -> ([a], [b])
+doubleFilter relates (a:as) bs1 = case flagFilter (relates a) bs1 of
+   Just bs2 -> doubleFilter relates as bs2
+   Nothing -> (a:resa, resb)
+    where (resa, resb) = doubleFilter relates as bs1
+
+doubleFilter _ [] bs = ([], bs)
+
+
 -- | Represents a block the player can hit with a bullet.
 data Block = Block
-  { blockPos    :: V2 Double
-  }
+  {
+    blockPos   :: V2 Double
+  } deriving Eq
+
+instance Object (Block) where
+  position = blockPos
+  dimensions b = blockDims
+
+blockDims :: V2 Double
+blockDims = V2 20 10
 
 -- | Represents a bullet a player can shoot
 data Bullet = Bullet
-  { bulletPos   :: V2 Double
-  }
+  {
+    bulletPos   :: V2 Double
+  } deriving Eq
+
+instance Object (Bullet) where
+  position = bulletPos
+  dimensions b = bulletDims
+
+bulletDims :: V2 Double
+bulletDims = V2 5 5
+
+bulletVel :: V2 Double
+bulletVel = V2 0 (-20)
 
 -- | Represents the game state.
 data Model = Model
@@ -49,24 +105,17 @@ initial =
   ( Model
       { playerPos = V2 400 550
       , playerVel = V2 0 0
-      , blocks = [Block { blockPos = fmap fromIntegral (V2 (100 * i) 20) } | i <- [1..7]]
+      , blocks = [Block { blockPos = fmap fromIntegral (V2 (100 * i) 100) } | i <- [1..7]]
       , bullets = []
       }
   , Cmd.none
   )
   where V2 w h = windowDims
 
-blockDims :: V2 Int
-blockDims = V2 20 10
-
-bulletDims :: V2 Int
-bulletDims = V2 5 5
-
-bulletVel :: V2 Double
-bulletVel = V2 0 (-20)
 
 windowDims :: V2 Int
 windowDims = V2 800 600
+
 
 update :: Model -> Action -> (Model, Cmd SDLEngine Action)
 update model@Model { .. } (Animate dt) =
@@ -79,18 +128,12 @@ update model@Model { .. } (Animate dt) =
   )
   where
     moveBullet bullet@Bullet { .. } = bullet { bulletPos = bulletPos + bulletVel }
-
+    (newBullets, newBlocks) = doubleFilter collision bullets blocks
     collideswithBlocks bullet [] = False
-    collideswithBlocks bullet (b:blocks) = (collideswith bullet b) || (collideswithBlocks bullet blocks)
+    collideswithBlocks bullet (b:blocks) = (collision bullet b) || (collideswithBlocks bullet blocks)
 
     collideswithBullets block [] = False
-    collideswithBullets block (b:bullets) = (collideswith b block) || (collideswithBullets block bullets)
-
-    collideswith (bullet@Bullet { .. }) (block@Block { .. }) =
-      bully <= blocky && bullx >= blockx - ( ((fromIntegral blockw) / 2)) && bullx <= blockx + ((fromIntegral blockw) / 2)
-      where V2 bullx bully    = bulletPos
-            V2 blockx blocky  = blockPos
-            V2 blockw blockh  = blockDims
+    collideswithBullets block (b:bullets) = (collision b block) || (collideswithBullets block bullets)
 
 update (model@Model { .. }) (ChangeVel dvel) =
   ( model
@@ -107,6 +150,7 @@ update (model@Model { .. }) (Shoot) =
   , Cmd.none
   )
 update model _ = (model, Cmd.none)
+
 
 subscriptions :: Sub SDLEngine Action
 -- subscriptions = Mouse.moves (\(V2 x y) -> ChangePosition $ V2 (fromIntegral x) (fromIntegral y))
@@ -131,8 +175,10 @@ view (model@Model { .. }) = Graphics2D $ collage
   , group $ map viewBullet $ bullets
   , group $ map viewBlock  $ blocks
   ]
-  where viewBullet Bullet { .. } = move bulletPos $ filled (rgb 0 1 0) $ rect (fmap fromIntegral bulletDims)
-        viewBlock   Block  { .. } = move blockPos  $ filled (rgb 0 0 1) $ rect (fmap fromIntegral blockDims)
+  where viewBullet Bullet { .. } = move bulletPos $ filled (rgb 0 1 0) $ rect (bulletDims)
+        viewBlock   Block  { .. } = move blockPos  $ filled (rgb 0 0 1) $ rect (blockDims)
+
+
 main :: IO ()
 main = do
   engine <- SDL.startupWith $ SDL.defaultConfig
