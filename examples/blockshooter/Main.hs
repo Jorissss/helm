@@ -7,7 +7,7 @@ import Helm
 import Helm.Color
 import Helm.Engine.SDL (SDLEngine)
 import Helm.Graphics2D
-
+import qualified Helm.Graphics2D.Text as Text
 import qualified Helm.Cmd as Cmd
 import qualified Helm.Mouse as Mouse
 import qualified Helm.Engine.SDL as SDL
@@ -66,6 +66,8 @@ doubleFilter _ [] bs = ([], bs)
 data Block = Block
   {
     blockPos   :: V2 Double
+  --, blockVel   :: V2 Double
+  --, blockMove  :: V2 Double -> V2 Double -> V2 Double -- ^ can take position and change velocity
   } deriving Eq
 
 instance Object (Block) where
@@ -89,7 +91,9 @@ bulletDims :: V2 Double
 bulletDims = V2 5 5
 
 bulletVel :: V2 Double
-bulletVel = V2 0 (-9)
+bulletVel = V2 0 (-0.8)
+
+type Level = [Block]
 
 -- | Represents the game state.
 data Model = Model
@@ -97,7 +101,11 @@ data Model = Model
   , playerVel   :: V2 Double
   , blocks      :: [Block]
   , bullets     :: [Bullet]
+  , currentLev  :: Int
   }
+
+playerDims :: V2 Double
+playerDims = V2 10 10
 
 
 initial :: (Model, Cmd SDLEngine Action)
@@ -105,8 +113,9 @@ initial =
   ( Model
       { playerPos = V2 400 550
       , playerVel = V2 0 0
-      , blocks = [Block { blockPos = fmap fromIntegral (V2 (100 * i) 100) } | i <- [1..7]]
+      , blocks = [Block { blockPos = fmap fromIntegral (V2 (100 * i) (100 * j)) } | i <- [1..7], j <- [1..3]]
       , bullets = []
+      , currentLev = 1
       }
   , Cmd.none
   )
@@ -116,19 +125,26 @@ initial =
 windowDims :: V2 Int
 windowDims = V2 800 600
 
+onscreen :: Object a => a -> Bool
+onscreen a = x >= 0 && x <= w && y >= 0 && y <= h
+  where V2 x y = position a
+        V2 w h = fmap fromIntegral windowDims
 
 update :: Model -> Action -> (Model, Cmd SDLEngine Action)
 update model@Model { .. } (Animate dt) =
   ( model
-    { playerPos   = playerPos + playerVel
-    , bullets     = map moveBullet [ b | b <- bullets, not $ collideswithBlocks b blocks ]
+    { playerPos   = if validPos newPos then newPos else playerPos
+    , bullets     = map moveBullet (filter onscreen [ b | b <- bullets, not $ collideswithBlocks b blocks ])
     , blocks      = [ b | b <- blocks, not $ collideswithBullets b bullets]
     }
     , Cmd.none
   )
   where
-    moveBullet bullet@Bullet { .. } = bullet { bulletPos = bulletPos + bulletVel }
-    (newBullets, newBlocks) = doubleFilter collision bullets blocks
+    newPos = playerPos + (fmap ((*) dt) playerVel)
+    validPos (V2 x y) = x - pw / 2 >= 0 && x + pw / 2 <= sw && y - ph / 2 >= 0 && y + ph / 2 <= sh
+      where V2 sw sh = fmap fromIntegral windowDims
+            V2 pw ph = playerDims
+    moveBullet bullet@Bullet { .. } = bullet { bulletPos = bulletPos + (fmap ((*) dt) bulletVel) }
     collideswithBlocks bullet [] = False
     collideswithBlocks bullet (b:blocks) = (collision bullet b) || (collideswithBlocks bullet blocks)
 
@@ -156,8 +172,8 @@ subscriptions :: Sub SDLEngine Action
 -- subscriptions = Mouse.moves (\(V2 x y) -> ChangePosition $ V2 (fromIntegral x) (fromIntegral y))
 subscriptions = Sub.batch
   [ Keyboard.downs $ \key -> (case key of
-      Keyboard.RightKey -> ChangeVel (V2 5 0)
-      Keyboard.LeftKey  -> ChangeVel (V2 (-5) 0)
+      Keyboard.RightKey -> ChangeVel (V2 0.3 0)
+      Keyboard.LeftKey  -> ChangeVel (V2 (-0.3) 0)
       _                 -> DoNothing)
   , Keyboard.presses $ \key -> (case key of
       Keyboard.SpaceKey -> Shoot
@@ -169,14 +185,32 @@ subscriptions = Sub.batch
   , Time.fps 60 Animate
   ]
 
+playingOverlay :: Model -> Color -> Form SDLEngine
+playingOverlay Model { .. } color =
+  group
+    [
+      move (V2 (w/2) (h/16)) $ text $ Text.height 12 $
+                                         Text.color color $
+                                         Text.toText status
+    ]
+
+  where
+    status = "score: " ++ (show $ length blocks) -- secondsText timeScore ++ " | " ++ printf "%.2fx speed" timeSpeed
+    V2 w h = fromIntegral <$> windowDims
+
 view :: Model -> Graphics SDLEngine
-view (model@Model { .. }) = Graphics2D $ collage
-  [ move playerPos $ filled (rgb 1 0 0) $ square 10
-  , group $ map viewBullet $ bullets
-  , group $ map viewBlock  $ blocks
-  ]
-  where viewBullet Bullet { .. } = move bulletPos $ filled (rgb 0 1 0) $ rect (bulletDims)
-        viewBlock   Block  { .. } = move blockPos  $ filled (rgb 0 0 1) $ rect (blockDims)
+view (model@Model { .. }) = Graphics2D $
+  collage
+    [
+      move playerPos $ filled (rgb 1 0 0) $ rect playerDims
+    , group $ map viewBullet $ bullets
+    , group $ map viewBlock  $ blocks
+    , playingOverlay model (rgb 0 1 1)
+    ]
+    where viewBullet Bullet { .. } = move bulletPos $ filled (rgb 0 1 0) $ rect (bulletDims)
+          viewBlock   Block  { .. } = move blockPos  $ filled (rgb 0 0 1) $ rect (blockDims)
+          V2 w h = fmap fromIntegral windowDims
+          V2 x y = playerPos
 
 
 main :: IO ()
@@ -187,8 +221,11 @@ main = do
     }
 
   run engine GameConfig
-    { fpsLimit        = defaultFPSLimit
-    , initialFn       = initial
+    { fpsLimit = Limited 60
+    , updateLimit = 10
+    } GameLifecycle
+    {
+      initialFn       = initial
     , updateFn        = update
     , subscriptionsFn = subscriptions
     , viewFn          = view
